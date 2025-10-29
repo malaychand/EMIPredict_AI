@@ -17,17 +17,16 @@ venv/
 Thumbs.db
 
 # Data files (large files - don't commit raw data)
-data/raw/
-data/processed_data/
-*.db
-*.sqlite
-*.csv
-*.xlsx
-*.xls
-*.parquet
-*.pkl
-*.pickle
-*.joblib
+# data/
+# *.db
+# *.sqlite
+# *.csv
+# *.xlsx
+# *.xls
+# *.parquet
+# *.pkl
+# *.pickle
+# *.joblib
 
 # Output files
 outputs/
@@ -35,6 +34,3 @@ outputs/
 
 # Streamlit
 .streamlit/
-
-# Jupyter Notebooks
-.ipynb_checkpoints/
