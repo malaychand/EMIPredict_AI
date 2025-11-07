@@ -1,19 +1,7 @@
 """
-DATA CLEANING SCRIPT (FINAL)
-----------------------------
-Cleans and prepares raw EMI dataset for model training.
+DATA CLEANING SCRIPT
 
-Order of Operations:
-1. Load dataset
-2. Remove duplicates
-3. Clean key categorical/numeric columns
-4. Clean numeric-like strings (e.g. "303200.0.0")
-5. Handle missing values (features only)
-6. Handle numeric outliers (IQR capping)
-7. Optional log-transform for skewed numeric features
-8. Save cleaned dataset to artifacts/
 """
-
 import pandas as pd
 import numpy as np
 from pathlib import Path
