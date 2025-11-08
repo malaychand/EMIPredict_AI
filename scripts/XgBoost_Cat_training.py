@@ -21,50 +21,12 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
-
-
-def load_and_preprocess_data(data_path):
-    """
-    Load and engineer features from EMI dataset
-    """
-    print(f"📥 Attempting to load dataset from: {data_path}")
-    if not os.path.exists(data_path):
-        raise FileNotFoundError(f"Dataset not found at: {data_path}")
-    
-    df = pd.read_csv(data_path)
-    print(f"✅ Loaded dataset with shape: {df.shape}")
-
-    # Feature Engineering (as per your spec)
-    df["debt_to_income"] = df["current_emi_amount"] / df["monthly_salary"].replace(0, np.nan)
-    
-    expense_cols = [
-        "school_fees", "college_fees", "travel_expenses", "groceries_utilities",
-        "other_monthly_expenses", "monthly_rent"
-    ]
-    df["total_monthly_expenses"] = df[expense_cols].sum(axis=1)
-    df["expense_to_income"] = df["total_monthly_expenses"] / df["monthly_salary"].replace(0, np.nan)
-    df["monthly_disposable"] = (
-        df["monthly_salary"] - df["total_monthly_expenses"] - df["current_emi_amount"]
-    )
-    df["instalment_if_approved"] = df["requested_amount"] / df["requested_tenure"].replace(0, np.nan)
-    df["affordability_ratio"] = df["monthly_disposable"] / df["instalment_if_approved"].replace(0, np.nan)
-    df["employment_stability"] = df["years_of_employment"] / df["age"].replace(0, np.nan)
-    df["loan_to_income_ratio"] = df["requested_amount"] / df["monthly_salary"].replace(0, np.nan)
-    df["dependents_ratio"] = df["dependents"] / df["family_size"].replace(0, np.nan)
-    
-    # Clean infinities and NaNs
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
-    df.dropna(inplace=True)  # Critical: Remove rows with NaN after feature engineering
-    
-    print(f"🧹 After cleaning: {df.shape}")
-    return df
-
+from data_preprocessing import load_and_preprocess_data
 
 def main():
     # ==============================
-    # CONFIGURATION - MODIFY THESE PATHS AS NEEDED
+    # Locate dataset
     # ==============================
-    # Option 1: Try common locations
     possible_paths = [
         "data/cleaned_EMI_dataset.csv",
         "../data/cleaned_EMI_dataset.csv",
@@ -72,22 +34,16 @@ def main():
         "./data/cleaned_EMI_dataset.csv"
     ]
     
-    data_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            data_path = path
-            break
-    
-    # Option 2: If not found, require user to specify
+    data_path = next((path for path in possible_paths if os.path.exists(path)), None)
     if data_path is None:
-        print("\n❌ Dataset not found in common locations!")
-        print("Please provide the full path to your 'cleaned_EMI_dataset.csv':")
+        print("❌ Dataset not found. Please provide path:")
         data_path = input("Dataset path: ").strip()
         if not os.path.exists(data_path):
-            print(f"❌ File still not found: {data_path}")
-            sys.exit(1)
-    
+            sys.exit(f"❌ File not found at {data_path}")
+
+    # ==============================
     # Load and preprocess
+    # ==============================
     df = load_and_preprocess_data(data_path)
     
     # ==============================
@@ -165,7 +121,6 @@ def main():
         param_distributions=param_dist,
         n_iter=2,
         scoring='f1_weighted',
-        cv=3,
         verbose=1,
         random_state=42,
         n_jobs=-1
