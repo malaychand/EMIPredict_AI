@@ -1,5 +1,3 @@
-# xgboost_regression_tuning_mlflow.py
-
 import os
 import sys
 import joblib
@@ -9,7 +7,7 @@ import subprocess
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for headless environments
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 import mlflow
@@ -47,7 +45,7 @@ def main():
     print("✅ Connected to DagsHub MLflow Tracking Server")
 
     git_commit = get_git_commit()
-    mlflow.set_experiment("emi_prediction_xgboost_regression")
+    mlflow.set_experiment("EMI_prediction_regression")
 
     # ==============================
     # Locate dataset
@@ -127,7 +125,7 @@ def main():
         random_search = RandomizedSearchCV(
             estimator=pipe,
             param_distributions=param_dist,
-            n_iter=5,
+            n_iter=10,
             scoring="r2",
             verbose=2,
             cv=3,
@@ -142,28 +140,19 @@ def main():
 
         # ✅ Log all RandomizedSearchCV iterations as child runs
         for idx in range(len(cv_results)):
-            with mlflow.start_run(run_name=f"iteration_{idx+1}", nested=True) as child_run:
+            with mlflow.start_run(run_name=f"iteration_{idx+1}", nested=True) as _:
                 params = {
                     k.replace("param_", ""): cv_results.loc[idx, k]
                     for k in cv_results.columns
                     if k.startswith("param_")
                 }
                 mlflow.log_params(params)
-                mlflow.log_metrics(
-                    {
-                        "mean_test_score": cv_results.loc[idx, "mean_test_score"],
-                        "mean_train_score": cv_results.loc[idx, "mean_train_score"],
-                        "rank_test_score": cv_results.loc[idx, "rank_test_score"],
-                    }
-                )
                 for fold in range(3):
                     mlflow.log_metric(f"split{fold}_test_score", cv_results.loc[idx, f"split{fold}_test_score"])
-                mlflow.set_tag("iteration", idx + 1)
 
         # ✅ Best model & evaluation
         best_model = random_search.best_estimator_
         best_params = random_search.best_params_
-        best_index = random_search.best_index_
         y_pred = best_model.predict(X_test)
 
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -174,17 +163,15 @@ def main():
         mlflow.log_params(best_params)
         mlflow.log_metrics(
             {
-                "test_rmse": rmse,
-                "test_mae": mae,
-                "test_r2": r2,
-                "test_mape": mape,
-                "best_cv_score": random_search.best_score_,
-                "best_iteration": best_index + 1,
+                "rmse": rmse,
+                "mae": mae,
+                "r2": r2,
+                "mape": mape,
             }
         )
 
         # ==============================
-        # Visualizations
+        # Visualizations (logged directly to MLflow)
         # ==============================
         # 1️⃣ Actual vs Predicted
         plt.figure(figsize=(8, 6))
@@ -194,11 +181,8 @@ def main():
         plt.ylabel("Predicted EMI")
         plt.title("Actual vs Predicted EMI (XGBoost)")
         plt.tight_layout()
-        act_pred_path = "xgb_actual_vs_pred.png"
-        plt.savefig(act_pred_path, dpi=150)
+        mlflow.log_figure(plt.gcf(), "plots/xgb_actual_vs_pred.png")
         plt.close()
-        mlflow.log_artifact(act_pred_path)
-        os.remove(act_pred_path)
 
         # 2️⃣ Residual Plot
         residuals = y_test - y_pred
@@ -209,11 +193,8 @@ def main():
         plt.ylabel("Residuals")
         plt.title("Residual Plot (XGBoost)")
         plt.tight_layout()
-        residuals_path = "xgb_residuals.png"
-        plt.savefig(residuals_path, dpi=150)
+        mlflow.log_figure(plt.gcf(), "plots/xgb_residuals.png")
         plt.close()
-        mlflow.log_artifact(residuals_path)
-        os.remove(residuals_path)
 
         # 3️⃣ Feature Importance
         feature_names = (
@@ -229,32 +210,23 @@ def main():
         feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances}).sort_values(
             "Importance", ascending=False
         )[:20]
+
         plt.figure(figsize=(10, 8))
         sns.barplot(x="Importance", y="Feature", data=feat_imp)
         plt.title("Top 20 Feature Importances (XGBoost)")
         plt.tight_layout()
-        feat_imp_path = "xgb_feature_importance.png"
-        plt.savefig(feat_imp_path, dpi=150)
+        mlflow.log_figure(plt.gcf(), "plots/xgb_feature_importance.png")
         plt.close()
-        mlflow.log_artifact(feat_imp_path)
-        os.remove(feat_imp_path)
 
-        # 4️⃣ Save CV results
-        cv_results_path = "xgb_cv_results.csv"
-        cv_results.to_csv(cv_results_path, index=False)
-        mlflow.log_artifact(cv_results_path)
-        os.remove(cv_results_path)
-
-        # 5️⃣ Save Model
-        joblib.dump(best_model, "xgb_best_model.pkl")
-        mlflow.log_artifact("xgb_best_model.pkl")
+        # 4️⃣ Save Model to models/ and log to MLflow
+        os.makedirs("models", exist_ok=True)
+        model_path = "models/xgb_best_model.pkl"
+        joblib.dump(best_model, model_path)
+        mlflow.log_artifact(model_path)
 
         # ✅ Log model signature
         signature = infer_signature(X_train, best_model.predict(X_train[:5]))
-        with open("xgb_model_signature.txt", "w") as f:
-            f.write(str(signature))
-        mlflow.log_artifact("xgb_model_signature.txt")
-        os.remove("xgb_model_signature.txt")
+        mlflow.log_text(str(signature), "xgb_model_signature.txt")
 
         # ==============================
         # Metadata & Summary
@@ -267,7 +239,6 @@ def main():
 
         print("\n✅ XGBoost Regression (RandomizedSearchCV) Completed")
         print(f"🏆 Best Params: {best_params}")
-        print(f"📈 Best CV Score (R²): {random_search.best_score_:.4f}")
         print(f"📊 Test Metrics:")
         print(f"   - RMSE: {rmse:.2f}")
         print(f"   - MAE: {mae:.2f}")
