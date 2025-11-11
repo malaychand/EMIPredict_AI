@@ -1,25 +1,54 @@
-# xgboost_regression_tuning.py
+# xgboost_regression_tuning_mlflow.py
 
 import os
 import sys
-import pandas as pd
+import joblib
+import dagshub
+import warnings
+import subprocess
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for headless environments
 import matplotlib.pyplot as plt
 import seaborn as sns
-import warnings
-warnings.filterwarnings('ignore')
+import mlflow
+from mlflow.models.signature import infer_signature
 
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
+from sklearn.metrics import (
+    mean_squared_error,
+    mean_absolute_error,
+    r2_score,
+    mean_absolute_percentage_error,
+)
 from xgboost import XGBRegressor
 from data_preprocessing import load_and_preprocess_data
 
+warnings.filterwarnings("ignore")
+
+
+# ----------------------------
+# Helper: Get Git Commit Hash
+# ----------------------------
+def get_git_commit():
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("ascii").strip()
+    except Exception:
+        return "unknown"
+
+
 def main():
+    # ✅ Connect MLflow (DagsHub)
+    dagshub.init(repo_owner="malaychand", repo_name="EMIPredict_AI", mlflow=True)
+    print("✅ Connected to DagsHub MLflow Tracking Server")
+
+    git_commit = get_git_commit()
+    mlflow.set_experiment("emi_prediction_xgboost_regression")
+
     # ==============================
     # Locate dataset
     # ==============================
@@ -27,172 +56,225 @@ def main():
         "data/cleaned_EMI_dataset.csv",
         "../data/cleaned_EMI_dataset.csv",
         "cleaned_EMI_dataset.csv",
-        "./data/cleaned_EMI_dataset.csv"
+        "./data/cleaned_EMI_dataset.csv",
     ]
-    
+
     data_path = next((path for path in possible_paths if os.path.exists(path)), None)
     if data_path is None:
-        print("❌ Dataset not found. Please provide path:")
-        data_path = input("Dataset path: ").strip()
-        if not os.path.exists(data_path):
-            sys.exit(f"❌ File not found at {data_path}")
+        sys.exit("❌ Dataset not found. Please verify path.")
 
     # ==============================
     # Load and preprocess
     # ==============================
     df = load_and_preprocess_data(data_path)
-    
-    # ==============================
-    # FEATURE/TARGET SETUP
-    # ==============================
-    X = df.drop(columns=['emi_eligibility', 'max_monthly_emi'])
-    y = df['max_monthly_emi']
-    
-    categorical_cols = X.select_dtypes(include=['object']).columns.tolist()
+
+    X = df.drop(columns=["emi_eligibility", "max_monthly_emi"])
+    y = df["max_monthly_emi"]
+
+    categorical_cols = X.select_dtypes(include=["object"]).columns.tolist()
     numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    
-    print("\n📊 Features detected:")
-    print(f"Categorical ({len(categorical_cols)}): {categorical_cols}")
-    print(f"Numerical ({len(numerical_cols)}): {numerical_cols}")
-    print(f"\n📈 Target stats:\n{y.describe()}")
-    
-    # Split data
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
-    print(f"\nSplitOptions: Train={X_train.shape}, Test={X_test.shape}")
-    
+
+    print(f"📊 Data split: Train={X_train.shape}, Test={X_test.shape}")
+
     # ==============================
-    # PREPROCESSING PIPELINE
+    # Preprocessing
     # ==============================
-    numeric_transformer = Pipeline(steps=[
-        ('scaler', StandardScaler())
-    ])
-    
-    categorical_transformer = Pipeline(steps=[
-        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
-    ])
-    
+    numeric_transformer = Pipeline([("scaler", StandardScaler())])
+    categorical_transformer = Pipeline(
+        [("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False))]
+    )
+
     preprocessor = ColumnTransformer(
         transformers=[
-            ('num', numeric_transformer, numerical_cols),
-            ('cat', categorical_transformer, categorical_cols)
+            ("num", numeric_transformer, numerical_cols),
+            ("cat", categorical_transformer, categorical_cols),
         ]
     )
-    
+
     # ==============================
-    # XGBOOST REGRESSOR + RANDOMIZED SEARCH
+    # XGBoost Regressor
     # ==============================
     xgb = XGBRegressor(
-        objective='reg:squarederror',
-        random_state=42
-    )
-    
-    pipe = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('regressor', xgb)
-    ])
-    
-    # Hyperparameter grid for regression
-    param_dist = {
-        'regressor__n_estimators': [100, 200, 300, 400],
-        'regressor__max_depth': [3, 5, 7, 9],
-        'regressor__learning_rate': [0.01, 0.05, 0.1, 0.15],
-        'regressor__subsample': [0.6, 0.8, 1.0],
-        'regressor__colsample_bytree': [0.6, 0.8, 1.0],
-        'regressor__gamma': [0, 0.1, 0.3],
-        'regressor__reg_alpha': [0, 0.5, 1.0],      # L1 regularization
-        'regressor__reg_lambda': [1, 1.5, 2.0]      # L2 regularization
-    }
-    
-    # RandomizedSearchCV
-    print("\n🔍 Starting RandomizedSearchCV (3-fold CV, 25 iterations)...")
-    random_search = RandomizedSearchCV(
-        estimator=pipe,
-        param_distributions=param_dist,
-        n_iter=2,
-        scoring='neg_root_mean_squared_error',  # Optimize for lowest RMSE
-        verbose=1,
+        objective="reg:squarederror",
         random_state=42,
-        n_jobs=-1
+        tree_method="hist",
+        eval_metric="rmse",
     )
-    
-    random_search.fit(X_train, y_train)
-    
-    print("\n" + "="*60)
-    print("✅ BEST PARAMETERS:")
-    for param, value in random_search.best_params_.items():
-        print(f"  {param}: {value}")
-    
+
+    pipe = Pipeline([("preprocessor", preprocessor), ("regressor", xgb)])
+
+    # Hyperparameter grid
+    param_dist = {
+        "regressor__n_estimators": [100, 200, 300, 400],
+        "regressor__max_depth": [3, 5, 7, 9],
+        "regressor__learning_rate": [0.01, 0.05, 0.1, 0.15],
+        "regressor__subsample": [0.6, 0.8, 1.0],
+        "regressor__colsample_bytree": [0.6, 0.8, 1.0],
+        "regressor__gamma": [0, 0.1, 0.3],
+        "regressor__reg_alpha": [0, 0.5, 1.0],
+        "regressor__reg_lambda": [1, 1.5, 2.0],
+    }
+
     # ==============================
-    # EVALUATION
+    # MLflow Parent Run
     # ==============================
-    best_model = random_search.best_estimator_
-    y_pred = best_model.predict(X_test)
-    
-    # Metrics
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    mae = mean_absolute_error(y_test, y_pred)
-    r2 = r2_score(y_test, y_pred)
-    mape = mean_absolute_percentage_error(y_test, y_pred)
-    
-    print("\n" + "="*60)
-    print("📈 MODEL PERFORMANCE:")
-    print(f"RMSE: {rmse:.2f}")
-    print(f"MAE:  {mae:.2f}")
-    print(f"R²:   {r2:.4f}")
-    print(f"MAPE: {mape:.4f} ({mape*100:.2f}%)")
-    
-    # Prediction vs Actual plot
-    plt.figure(figsize=(10, 6))
-    plt.scatter(y_test, y_pred, alpha=0.3, s=1)
-    plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
-    plt.xlabel('Actual Max Monthly EMI')
-    plt.ylabel('Predicted Max Monthly EMI')
-    plt.title('Actual vs Predicted EMI Amounts')
-    plt.tight_layout()
-    plt.savefig("regression_actual_vs_pred.png", dpi=150)
-    print("\n💾 Actual vs Predicted plot saved as 'regression_actual_vs_pred.png'")
-    
-    # Residuals plot
-    residuals = y_test - y_pred
-    plt.figure(figsize=(10, 6))
-    plt.scatter(y_pred, residuals, alpha=0.3, s=1)
-    plt.axhline(y=0, color='r', linestyle='--')
-    plt.xlabel('Predicted EMI')
-    plt.ylabel('Residuals')
-    plt.title('Residual Plot')
-    plt.tight_layout()
-    plt.savefig("regression_residuals.png", dpi=150)
-    print("💾 Residuals plot saved as 'regression_residuals.png'")
-    
-    # Feature Importance
-    feature_names = (
-        numerical_cols +
-        list(best_model.named_steps['preprocessor']
-             .named_transformers_['cat']
-             .named_steps['onehot']
-             .get_feature_names_out(categorical_cols))
-    )
-    
-    importances = best_model.named_steps['regressor'].feature_importances_
-    feat_imp = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': importances
-    }).sort_values('Importance', ascending=False).head(20)
-    
-    plt.figure(figsize=(10, 8))
-    sns.barplot(x='Importance', y='Feature', data=feat_imp)
-    plt.title("Top 20 Feature Importances - XGBoost Regressor")
-    plt.tight_layout()
-    plt.savefig("regression_feature_importance.png", dpi=150)
-    print("💾 Feature importance plot saved as 'regression_feature_importance.png'")
-    
-    # Save model
-    import joblib
-    joblib.dump(best_model, "best_xgb_regressor.pkl")
-    print("\n💾 Best model saved as 'best_xgb_regressor.pkl'")
-    print("\n🎉 Regression training completed successfully!")
+    with mlflow.start_run(run_name="xgboost_randomsearch_parent") as parent_run:
+        print("\n🔍 Starting RandomizedSearchCV...")
+        random_search = RandomizedSearchCV(
+            estimator=pipe,
+            param_distributions=param_dist,
+            n_iter=5,
+            scoring="r2",
+            verbose=2,
+            cv=3,
+            random_state=42,
+            n_jobs=-1,
+            return_train_score=True,
+        )
+        random_search.fit(X_train, y_train)
+
+        cv_results = pd.DataFrame(random_search.cv_results_)
+        print(f"\n✅ Total iterations: {len(cv_results)}")
+
+        # ✅ Log all RandomizedSearchCV iterations as child runs
+        for idx in range(len(cv_results)):
+            with mlflow.start_run(run_name=f"iteration_{idx+1}", nested=True) as child_run:
+                params = {
+                    k.replace("param_", ""): cv_results.loc[idx, k]
+                    for k in cv_results.columns
+                    if k.startswith("param_")
+                }
+                mlflow.log_params(params)
+                mlflow.log_metrics(
+                    {
+                        "mean_test_score": cv_results.loc[idx, "mean_test_score"],
+                        "mean_train_score": cv_results.loc[idx, "mean_train_score"],
+                        "rank_test_score": cv_results.loc[idx, "rank_test_score"],
+                    }
+                )
+                for fold in range(3):
+                    mlflow.log_metric(f"split{fold}_test_score", cv_results.loc[idx, f"split{fold}_test_score"])
+                mlflow.set_tag("iteration", idx + 1)
+
+        # ✅ Best model & evaluation
+        best_model = random_search.best_estimator_
+        best_params = random_search.best_params_
+        best_index = random_search.best_index_
+        y_pred = best_model.predict(X_test)
+
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        mape = mean_absolute_percentage_error(y_test, y_pred)
+
+        mlflow.log_params(best_params)
+        mlflow.log_metrics(
+            {
+                "test_rmse": rmse,
+                "test_mae": mae,
+                "test_r2": r2,
+                "test_mape": mape,
+                "best_cv_score": random_search.best_score_,
+                "best_iteration": best_index + 1,
+            }
+        )
+
+        # ==============================
+        # Visualizations
+        # ==============================
+        # 1️⃣ Actual vs Predicted
+        plt.figure(figsize=(8, 6))
+        plt.scatter(y_test, y_pred, alpha=0.4)
+        plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], "r--", lw=2)
+        plt.xlabel("Actual EMI")
+        plt.ylabel("Predicted EMI")
+        plt.title("Actual vs Predicted EMI (XGBoost)")
+        plt.tight_layout()
+        act_pred_path = "xgb_actual_vs_pred.png"
+        plt.savefig(act_pred_path, dpi=150)
+        plt.close()
+        mlflow.log_artifact(act_pred_path)
+        os.remove(act_pred_path)
+
+        # 2️⃣ Residual Plot
+        residuals = y_test - y_pred
+        plt.figure(figsize=(8, 6))
+        plt.scatter(y_pred, residuals, alpha=0.4)
+        plt.axhline(y=0, color="r", linestyle="--")
+        plt.xlabel("Predicted EMI")
+        plt.ylabel("Residuals")
+        plt.title("Residual Plot (XGBoost)")
+        plt.tight_layout()
+        residuals_path = "xgb_residuals.png"
+        plt.savefig(residuals_path, dpi=150)
+        plt.close()
+        mlflow.log_artifact(residuals_path)
+        os.remove(residuals_path)
+
+        # 3️⃣ Feature Importance
+        feature_names = (
+            numerical_cols
+            + list(
+                best_model.named_steps["preprocessor"]
+                .named_transformers_["cat"]
+                .named_steps["onehot"]
+                .get_feature_names_out(categorical_cols)
+            )
+        )
+        importances = best_model.named_steps["regressor"].feature_importances_
+        feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances}).sort_values(
+            "Importance", ascending=False
+        )[:20]
+        plt.figure(figsize=(10, 8))
+        sns.barplot(x="Importance", y="Feature", data=feat_imp)
+        plt.title("Top 20 Feature Importances (XGBoost)")
+        plt.tight_layout()
+        feat_imp_path = "xgb_feature_importance.png"
+        plt.savefig(feat_imp_path, dpi=150)
+        plt.close()
+        mlflow.log_artifact(feat_imp_path)
+        os.remove(feat_imp_path)
+
+        # 4️⃣ Save CV results
+        cv_results_path = "xgb_cv_results.csv"
+        cv_results.to_csv(cv_results_path, index=False)
+        mlflow.log_artifact(cv_results_path)
+        os.remove(cv_results_path)
+
+        # 5️⃣ Save Model
+        joblib.dump(best_model, "xgb_best_model.pkl")
+        mlflow.log_artifact("xgb_best_model.pkl")
+
+        # ✅ Log model signature
+        signature = infer_signature(X_train, best_model.predict(X_train[:5]))
+        with open("xgb_model_signature.txt", "w") as f:
+            f.write(str(signature))
+        mlflow.log_artifact("xgb_model_signature.txt")
+        os.remove("xgb_model_signature.txt")
+
+        # ==============================
+        # Metadata & Summary
+        # ==============================
+        mlflow.set_tag("author", "Malay Chand")
+        mlflow.set_tag("git_commit", git_commit)
+        mlflow.set_tag("dataset", "cleaned_EMI_dataset")
+        mlflow.set_tag("model", "XGBoostRegressor")
+        mlflow.set_tag("tracking_uri", "https://dagshub.com/malaychand/EMIPredict_AI.mlflow")
+
+        print("\n✅ XGBoost Regression (RandomizedSearchCV) Completed")
+        print(f"🏆 Best Params: {best_params}")
+        print(f"📈 Best CV Score (R²): {random_search.best_score_:.4f}")
+        print(f"📊 Test Metrics:")
+        print(f"   - RMSE: {rmse:.2f}")
+        print(f"   - MAE: {mae:.2f}")
+        print(f"   - R²: {r2:.4f}")
+        print(f"   - MAPE: {mape:.2f}")
+        print(f"\n🔗 MLflow URL: https://dagshub.com/malaychand/EMIPredict_AI.mlflow")
+        print(f"🧾 Parent Run ID: {parent_run.info.run_id}")
 
 
 if __name__ == "__main__":

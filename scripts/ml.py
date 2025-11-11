@@ -34,9 +34,6 @@ def get_git_commit():
     except Exception:
         return "unknown"
 
-# ✅ Connect to DagsHub for MLflow Tracking
-dagshub.init(repo_owner='malaychand', repo_name='EMIPredict_AI', mlflow=True)
-print("✅ Connected to DagsHub MLflow Tracking Server")
 
 # ----------------------------
 # Main Training Function
