@@ -196,7 +196,7 @@ def main():
         # Save Model in `models/`
         # ==============================
         os.makedirs("models", exist_ok=True)
-        model_path = "models/xgb_best_model.pkl"
+        model_path = "models/xgb_reg_model.pkl"
 
         # Remove old file if exists
         if os.path.exists(model_path):
