@@ -115,7 +115,7 @@ def main():
     random_search = RandomizedSearchCV(
         estimator=pipe,
         param_distributions=param_dist,
-        n_iter=10,
+        n_iter=8,
         scoring='f1_weighted',
         verbose=2,
         cv=3,
