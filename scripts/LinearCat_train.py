@@ -23,6 +23,8 @@ from sklearn.metrics import (
 )
 from sklearn.linear_model import LogisticRegression
 
+from imblearn.over_sampling import SMOTE
+
 from data_preprocessing import load_and_preprocess_data
 
 warnings.filterwarnings("ignore")
@@ -71,24 +73,25 @@ def main():
     # ----------------------------
     df = load_and_preprocess_data(data_path)
 
+    print("\n📌 Original Class Distribution:")
+    print(df["emi_eligibility"].value_counts())
+
     X = df.drop(columns=["emi_eligibility", "max_monthly_emi"])
     y = df["emi_eligibility"]
 
     categorical_cols = X.select_dtypes(include=["object"]).columns.tolist()
     numerical_cols = X.select_dtypes(include=[np.number]).columns.tolist()
 
+    # ----------------------------
+    # Encode labels
+    # ----------------------------
     label_enc = LabelEncoder()
     y_encoded = label_enc.fit_transform(y)
     label_mapping = dict(zip(label_enc.classes_, label_enc.transform(label_enc.classes_)))
-    print("Label Mapping:", label_mapping)
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
-    )
-    print(f"📊 Data split: Train={X_train.shape}, Test={X_test.shape}")
+    print("\nLabel Mapping:", label_mapping)
 
     # ----------------------------
-    # Preprocessing pipeline
+    # Preprocessing pipeline (WITHOUT applying fit_transform yet)
     # ----------------------------
     numeric_transformer = Pipeline([("scaler", StandardScaler())])
     categorical_transformer = Pipeline(
@@ -99,15 +102,40 @@ def main():
         transformers=[
             ("num", numeric_transformer, numerical_cols),
             ("cat", categorical_transformer, categorical_cols),
-        ]
+        ],
+        remainder="drop"
     )
 
+    # Fit only to transform training data later
+    X_preprocessed = preprocessor.fit_transform(X)
+
     # ----------------------------
-    # Model + RandomizedSearchCV
+    # SMOTE Oversampling AFTER preprocessing
+    # ----------------------------
+    print("\n🔄 Applying SMOTE Oversampling to balance classes...")
+
+    sm = SMOTE(random_state=42)
+    X_resampled, y_resampled = sm.fit_resample(X_preprocessed, y_encoded)
+
+    print("\n📌 New Class Distribution After SMOTE:")
+    unique, counts = np.unique(y_resampled, return_counts=True)
+    for cls, cnt in zip(unique, counts):
+        print(f"{label_enc.inverse_transform([cls])[0]} : {cnt}")
+
+    # ----------------------------
+    # Train-test split (balanced data)
+    # ----------------------------
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled
+    )
+    print(f"\n📊 Data split: Train={X_train.shape}, Test={X_test.shape}")
+
+    # ----------------------------
+    # Model training: Logistic Regression + RandomizedSearchCV
     # ----------------------------
     log_reg = LogisticRegression(max_iter=2000, solver="saga", multi_class="multinomial")
 
-    pipe = Pipeline([("preprocessor", preprocessor), ("classifier", log_reg)])
+    pipe = Pipeline([("classifier", log_reg)])
 
     param_dist = {
         "classifier__C": np.logspace(-3, 2, 10),
@@ -118,7 +146,7 @@ def main():
     random_search = RandomizedSearchCV(
         estimator=pipe,
         param_distributions=param_dist,
-        n_iter=5,
+        n_iter=4,
         scoring="f1_weighted",
         verbose=2,
         random_state=42,
@@ -128,58 +156,32 @@ def main():
     )
 
     # ----------------------------
-    # Parent MLflow run
+    # MLflow logging
     # ----------------------------
-    with mlflow.start_run(run_name="logistic") as parent_run:
+    with mlflow.start_run(run_name="logistic_smote") as parent_run:
         mlflow.set_tag("author", "Malay Chand")
         mlflow.set_tag("git_commit", git_commit)
-        mlflow.set_tag("dataset", os.path.basename(data_path))
+        mlflow.set_tag("balanced", "SMOTE")
         mlflow.set_tag("model", "LogisticRegression")
-        mlflow.set_tag("search_type", "randomized")
-        mlflow.set_tag("task", "classification")
+
+        # Log class distribution
+        mlflow.log_text(str(counts.tolist()), "class_distribution_after_smote.txt")
 
         print("\n🔍 Running RandomizedSearchCV (this may take a bit)...")
         random_search.fit(X_train, y_train)
 
-        # Log CV results as table (no local file)
+        # Save CV results
         cv_results = pd.DataFrame(random_search.cv_results_)
-        mlflow.log_table(data=cv_results, artifact_file="logistic_cv_results.json")
+        mlflow.log_table(cv_results, "logistic_cv_results.json")
 
-        # Log child runs
-        for idx in range(len(cv_results)):
-            with mlflow.start_run(run_name=f"iteration_{idx+1}", nested=True):
-                params = {
-                    k.replace("param_", ""): cv_results.loc[idx, k]
-                    for k in cv_results.columns if k.startswith("param_")
-                }
-                mlflow.log_params(params)
-
-                for key in ["mean_test_score", "std_test_score", "mean_train_score", "std_train_score", "rank_test_score"]:
-                    if key in cv_results.columns:
-                        val = cv_results.loc[idx, key]
-                        if pd.notna(val):
-                            mlflow.log_metric(key, float(val))
-
-                split_keys = [c for c in cv_results.columns if c.startswith("split") and c.endswith("_test_score")]
-                for sk in split_keys:
-                    val = cv_results.loc[idx, sk]
-                    if pd.notna(val):
-                        mlflow.log_metric(sk, float(val))
-
-                mlflow.set_tag("iteration", idx + 1)
-                mlflow.set_tag("search_type", "randomized")
-
-        # ----------------------------
-        # Best model evaluation
-        # ----------------------------
         best_model = random_search.best_estimator_
         best_params = random_search.best_params_
-        best_index = random_search.best_index_
 
-        mlflow.log_params({f"best_{k}": v for k, v in best_params.items()})
-        mlflow.log_metric("best_cv_score", float(random_search.best_score_))
-        mlflow.log_metric("best_iteration_index", int(best_index))
+        mlflow.log_params(best_params)
 
+        # ----------------------------
+        # Model Evaluation
+        # ----------------------------
         y_pred = best_model.predict(X_test)
         y_proba = best_model.predict_proba(X_test)
 
@@ -187,86 +189,39 @@ def main():
         y_test_labels = label_enc.inverse_transform(y_test)
 
         acc = accuracy_score(y_test_labels, y_pred_labels)
-        prec = precision_score(y_test_labels, y_pred_labels, average="weighted", zero_division=0)
-        rec = recall_score(y_test_labels, y_pred_labels, average="weighted", zero_division=0)
-        f1 = f1_score(y_test_labels, y_pred_labels, average="weighted", zero_division=0)
+        prec = precision_score(y_test_labels, y_pred_labels, average="weighted")
+        rec = recall_score(y_test_labels, y_pred_labels, average="weighted")
+        f1 = f1_score(y_test_labels, y_pred_labels, average="weighted")
 
-        try:
-            roc_auc = roc_auc_score(y_test, y_proba, multi_class="ovr")
-        except Exception:
-            classes = np.arange(len(label_enc.classes_))
-            y_test_bin = label_binarize(y_test, classes=classes)
-            roc_auc = roc_auc_score(y_test_bin, y_proba, average="macro")
+        roc_auc = roc_auc_score(y_test, y_proba, multi_class="ovr")
 
-        # ✅ Keep metric names EXACTLY as requested
         mlflow.log_metrics({
-            "test_accuracy": float(acc),
-            "test_precision_weighted": float(prec),
-            "test_recall_weighted": float(rec),
-            "test_f1_weighted": float(f1),
-            "test_roc_auc_ovr": float(roc_auc)
+            "test_accuracy": acc,
+            "test_precision_weighted": prec,
+            "test_recall_weighted": rec,
+            "test_f1_weighted": f1,
+            "test_roc_auc_ovr": roc_auc
         })
 
         # Classification report
-        class_report = classification_report(y_test_labels, y_pred_labels, digits=4)
-        print("\n=== Classification Report ===")
-        print(class_report)
+        report = classification_report(y_test_labels, y_pred_labels)
+        mlflow.log_text(report, "classification_report.txt")
 
-        report_text = f"Label Mapping:\n{label_mapping}\n\n{class_report}"
-        mlflow.log_text(report_text, "classification_report.txt")
+        # Save model (preprocessor + classifier)
+        final_model = Pipeline([
+            ("preprocessor", preprocessor),
+            ("classifier", best_model.named_steps["classifier"])
+        ])
 
-        # Confusion Matrix
-        cm = confusion_matrix(y_test_labels, y_pred_labels, labels=label_enc.classes_)
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                    xticklabels=label_enc.classes_, yticklabels=label_enc.classes_, ax=ax)
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("Actual")
-        ax.set_title("Confusion Matrix - Logistic Regression")
-        mlflow.log_figure(fig, "confusion_matrix.png")
-        plt.close(fig)
-
-        # ROC Curves (One-vs-Rest)
-        classes = np.arange(len(label_enc.classes_))
-        y_test_bin = label_binarize(y_test, classes=classes)
-        fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
-        for i, class_name in enumerate(label_enc.classes_):
-            try:
-                fpr, tpr, _ = roc_curve(y_test_bin[:, i], y_proba[:, i])
-                auc_score = auc(fpr, tpr)
-                ax_roc.plot(fpr, tpr, label=f"{class_name} (AUC = {auc_score:.3f})")
-            except Exception:
-                continue
-        ax_roc.plot([0, 1], [0, 1], "k--", lw=1)
-        ax_roc.set_xlabel("False Positive Rate")
-        ax_roc.set_ylabel("True Positive Rate")
-        ax_roc.set_title("ROC Curves (One-vs-Rest)")
-        ax_roc.legend(loc="lower right", fontsize="small")
-        mlflow.log_figure(fig_roc, "roc_curves.png")
-        plt.close(fig_roc)
-
-        # Save model
         os.makedirs("models", exist_ok=True)
-        model_path = "models/logistic_classifier_model.pkl"
-        joblib.dump(best_model, model_path)
+        model_path = "models/logistic_classifier_smote.pkl"
+        joblib.dump(final_model, model_path)
         mlflow.log_artifact(model_path)
 
-        # Final tags
-        mlflow.set_tag("total_iterations", len(cv_results))
-        mlflow.set_tag("tracking_uri", "https://dagshub.com/malaychand/EMIPredict_AI.mlflow")
-
-        # Summary
-        print("\n✅ Logistic Regression (RandomizedSearchCV) Completed")
+        print("\n🎉 Model Training Complete with SMOTE Oversampling")
         print(f"🏆 Best Params: {best_params}")
-        print(f"📈 Best CV Score (f1_weighted): {random_search.best_score_:.4f}")
-        print("📊 Test Metrics:")
-        print(f"   - Accuracy:  {acc:.4f}")
-        print(f"   - Precision: {prec:.4f}")
-        print(f"   - Recall:    {rec:.4f}")
-        print(f"   - F1 Score:  {f1:.4f}")
-        print(f"   - ROC-AUC (OVR): {roc_auc:.4f}")
-        print(f"\n🔗 MLflow URL: https://dagshub.com/malaychand/EMIPredict_AI.mlflow")
-        print(f"🧾 Parent Run ID: {parent_run.info.run_id}")
+        print(f"📈 F1 Score: {f1:.4f}")
+        print(f"🔗 MLflow: https://dagshub.com/malaychand/EMIPredict_AI.mlflow")
 
 
 if __name__ == "__main__":

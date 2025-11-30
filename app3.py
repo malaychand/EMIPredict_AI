@@ -1,10 +1,9 @@
-# app.py — EMI Prediction & Eligibility (complete)
+# app.py — EMI Prediction & Eligibility (updated)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 from pathlib import Path
-import base64
 from typing import Dict, Any
 
 st.set_page_config(page_title="💰 EMI Predictor & Eligibility", layout="wide")
@@ -22,6 +21,7 @@ MODEL_CONFIG = {
         "regressor": "models/rf_regressor.pkl"
     },
     "Logistic/Linear": {
+        # These names match your prior notebook's joblib.dump filenames
         "classifier": "models/logistic_classifier.pkl",
         "regressor": "models/linear_regressor.pkl"
     },
@@ -53,14 +53,10 @@ def to_download_button(df: pd.DataFrame, filename: str, label: str = "Download C
 
 # -----------------------
 # Feature engineering (based on your preprocessing)
+# (unchanged — using your robust version)
 # -----------------------
 def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Apply the same feature engineering as in your data_preprocessing file,
-    but more robust to zeros/missing values.
-    """
     df = df.copy()
-    # Expected expense columns may be missing in some uploads — ensure they exist
     expense_cols = [
         "school_fees", "college_fees", "travel_expenses",
         "groceries_utilities", "other_monthly_expenses", "monthly_rent"
@@ -69,7 +65,6 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         if col not in df.columns:
             df[col] = 0.0
 
-    # Coerce numeric fields to numeric types where appropriate
     numeric_candidates = [
         "monthly_salary", "current_emi_amount", "requested_amount",
         "requested_tenure", "years_of_employment", "age",
@@ -81,11 +76,8 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    # Replace infinities and huge values
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
-    # Feature engineering calculations with safe division
-    # avoid divide-by-zero by using np.where conditions
     df["debt_to_income"] = np.where(
         df.get("monthly_salary", 0) != 0,
         df.get("current_emi_amount", 0) / df.get("monthly_salary", np.nan),
@@ -100,12 +92,15 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         np.nan
     )
 
+    # safe subtraction with fill
     df["monthly_disposable"] = (
-        df.get("monthly_salary", 0).fillna(0) - df["total_monthly_expenses"].fillna(0) - df.get("current_emi_amount", 0).fillna(0)
+        df.get("monthly_salary", pd.Series(0,index=df.index)).fillna(0)
+        - df["total_monthly_expenses"].fillna(0)
+        - df.get("current_emi_amount", pd.Series(0,index=df.index)).fillna(0)
     )
 
     df["instalment_if_approved"] = np.where(
-        df.get("requested_tenure", 0) != 0,
+        (df.get("requested_tenure", 0) != 0),
         df.get("requested_amount", 0) / df.get("requested_tenure", np.nan),
         np.nan
     )
@@ -134,11 +129,10 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         np.nan
     )
 
-    # Replace inf and NaNs created by division with sensible fill values for model input:
-    # We fill NaN with 0 where it makes sense (ratios of zero) and for other numeric columns fill with column medians
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
-    # For key engineered features, fill NaN with 0 (meaning unknown/zero effect)
     engineered_cols_zero_fill = [
         "debt_to_income", "expense_to_income", "instalment_if_approved",
         "affordability_ratio", "employment_stability", "loan_to_income_ratio", "dependents_ratio"
@@ -147,7 +141,6 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].fillna(0.0)
 
-    # For other numeric cols, fill NaN with median
     for col in numeric_cols:
         if df[col].isna().any():
             median_val = df[col].median(skipna=True)
@@ -155,13 +148,12 @@ def apply_feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
                 median_val = 0.0
             df[col] = df[col].fillna(median_val)
 
-    # Ensure no remaining infinities
     df.replace([np.inf, -np.inf], 0.0, inplace=True)
 
     return df
 
 # -----------------------
-# Prediction helpers
+# Prediction helpers (enhanced)
 # -----------------------
 def model_predict_regression(model, X: pd.DataFrame):
     """Return scalar prediction for regression models. Works with pipelines and raw models."""
@@ -169,7 +161,6 @@ def model_predict_regression(model, X: pd.DataFrame):
         pred = model.predict(X)
         return float(np.asarray(pred).ravel()[0]) if pred is not None else None
     except Exception:
-        # maybe model expects preprocessed numeric array
         try:
             arr = X.values
             pred = model.predict(arr)
@@ -179,48 +170,78 @@ def model_predict_regression(model, X: pd.DataFrame):
             return None
 
 def model_predict_classification(model, X: pd.DataFrame):
-    """Return (pred_label, confidence). Supports both pipeline and raw models."""
+    """
+    Return (pred_label_string, confidence_float, raw_pred_value).
+    Heuristics:
+     - If the model/pipeline contains a classifier with classes_ that are strings, map back.
+     - If numeric (0/1) with no mapping, map 1->'Eligible', 0->'Not Eligible'.
+    """
     try:
         pred = model.predict(X)
-        pred_val = np.asarray(pred).ravel()[0]
-        # find classifier inside pipeline if present
+        raw = np.asarray(pred).ravel()[0]
+
+        # find classifier object (pipeline or bare)
         clf = model
         if hasattr(model, "named_steps"):
-            if "classifier" in model.named_steps:
-                clf = model.named_steps["classifier"]
+            # try common names
+            for name in ("classifier", "clf", "model", "estimator"):
+                if name in model.named_steps:
+                    clf = model.named_steps[name]
+                    break
             else:
-                # fallback: last step
+                # fallback to last step
                 clf = list(model.named_steps.values())[-1]
-        label = pred_val
-        # try decode via classes_
-        if hasattr(clf, "classes_"):
-            try:
-                # If prediction is numeric index, map it back. Otherwise keep as-is.
-                if isinstance(pred_val, (np.integer, int)):
-                    classes = list(clf.classes_)
-                    label = classes[int(pred_val)]
+
+        # attempt to get nice label
+        label = raw
+        try:
+            if hasattr(clf, "classes_"):
+                classes = list(clf.classes_)
+                # if classes are strings and raw is index-like, map
+                if len(classes) > 0 and isinstance(classes[0], str):
+                    # if raw is an index (0/1), try to map
+                    if isinstance(raw, (np.integer, int)):
+                        label = classes[int(raw)]
+                    else:
+                        label = raw
                 else:
-                    label = pred_val
-            except Exception:
-                label = pred_val
-        # probability
+                    # classes are numeric (e.g., 0/1), map numeric to meaning
+                    if isinstance(raw, (np.integer, int, float)):
+                        label = int(raw)
+                    else:
+                        label = raw
+        except Exception:
+            label = raw
+
+        # confidence / probability (if available)
         proba = None
         try:
-            # try pipeline-level predict_proba
             if hasattr(model, "predict_proba"):
                 probs = model.predict_proba(X)
                 proba = float(np.max(probs[0]))
-            else:
-                # try classifier component
-                if hasattr(clf, "predict_proba"):
-                    probs = clf.predict_proba(X if clf is model else X)
-                    proba = float(np.max(probs[0]))
+            elif hasattr(clf, "predict_proba"):
+                probs = clf.predict_proba(X if clf is model else X)
+                proba = float(np.max(probs[0]))
         except Exception:
             proba = None
-        return label, proba
+
+        # if label is numeric 0/1, convert to human-friendly
+        if isinstance(label, (int, np.integer)):
+            label_str = "Eligible" if int(label) == 1 else "Not Eligible"
+        else:
+            # try to normalize common strings
+            ls = str(label).strip().lower()
+            if ls in ("1", "true", "yes", "eligible"):
+                label_str = "Eligible"
+            elif ls in ("0", "false", "no", "not eligible"):
+                label_str = "Not Eligible"
+            else:
+                label_str = str(label)
+
+        return label_str, proba, raw
     except Exception as e:
         st.error(f"Classification prediction failed: {e}")
-        return None, None
+        return None, None, None
 
 # -----------------------
 # UI - Header & Model selection
@@ -249,12 +270,10 @@ if clf_model is None or reg_model is None:
     st.warning("One or both model files not found. Please check MODEL_CONFIG paths in the script.")
 
 # -----------------------
-# Input: form or CSV upload
+# Input: form or CSV upload (unchanged)
 # -----------------------
-st.subheader("Input Data")
 mode = st.radio("Input mode", options=["Single (form)", "Batch (CSV upload)"], horizontal=True)
 
-# Default fields used in your earlier form (matching names used in feature engineering)
 base_fields = {
     "age": 30,
     "gender": "Male",
@@ -379,23 +398,57 @@ if input_df is not None:
     else:
         preds = []
         for idx, row in engineered.iterrows():
-            # pass a dataframe row with column names preserved
             row_df = pd.DataFrame([row])
+
+            # Regression prediction (predicted maximum monthly EMI)
             reg_pred = model_predict_regression(reg_model, row_df)
-            cls_label, cls_proba = model_predict_classification(clf_model, row_df)
-            # If classifier returns numeric labels and you used LabelEncoder during training, the model/pipeline should map back.
+
+            # Classification prediction (eligible / not eligible)
+            cls_label, cls_proba, cls_raw = model_predict_classification(clf_model, row_df)
+
+            # make sure requested_amount and tenure are numeric
+            req_amt = float(row.get("requested_amount", 0) or 0)
+            req_ten = int(row.get("requested_tenure", 0) or 0)
+
+            # Compute approved amount when eligible:
+            # approved_amount = min(requested_amount, predicted_max_emi * requested_tenure)
+            approved_amount = 0.0
+            approved_monthly_emi = 0.0
+            approved_reason = ""
+            if cls_label is not None and str(cls_label).strip().lower() == "eligible" and reg_pred is not None and req_ten > 0:
+                # compute maximum loan value applicant can be given based on predicted monthly capacity
+                max_possible_loan = reg_pred * req_ten
+                approved_amount = min(req_amt, max_possible_loan) if req_amt > 0 else max_possible_loan
+                # monthly EMI on approved amount (simple equal installment = approved_amount / tenure)
+                approved_monthly_emi = approved_amount / req_ten if req_ten > 0 else 0.0
+                approved_reason = f"Approved as predicted capacity supports up to ₹{max_possible_loan:,.2f} over {req_ten} months."
+            else:
+                approved_amount = 0.0
+                approved_monthly_emi = 0.0
+                if cls_label is not None:
+                    approved_reason = "Not eligible or insufficient predicted EMI capacity."
+
             preds.append({
                 **row.to_dict(),
                 "predicted_max_emi": reg_pred,
                 "predicted_eligibility_label": cls_label,
-                "prediction_confidence": cls_proba
+                "prediction_confidence": cls_proba,
+                "prediction_raw_label": cls_raw,
+                "approved_amount": approved_amount,
+                "approved_monthly_emi": approved_monthly_emi,
+                "approval_reason": approved_reason
             })
 
         results_df = pd.DataFrame(preds)
 
         st.subheader("🔎 Predictions")
-        # show key result columns first
-        display_cols = ["predicted_max_emi", "predicted_eligibility_label", "prediction_confidence"] + [c for c in results_df.columns if c not in ("predicted_max_emi","predicted_eligibility_label","prediction_confidence")]
+        display_cols = [
+            "predicted_max_emi", "predicted_eligibility_label", "prediction_confidence",
+            "approved_amount", "approved_monthly_emi", "approval_reason"
+        ] + [c for c in results_df.columns if c not in (
+            "predicted_max_emi","predicted_eligibility_label","prediction_confidence",
+            "approved_amount","approved_monthly_emi","approval_reason"
+        )]
         st.dataframe(results_df[display_cols].head(100))
 
         # Single-record nice display
@@ -404,34 +457,52 @@ if input_df is not None:
             c1, c2 = st.columns(2)
             with c1:
                 if pd.notnull(r["predicted_max_emi"]):
-                    st.metric("📈 Predicted Maximum EMI", f"₹ {r['predicted_max_emi']:,.2f}")
+                    st.metric("📈 Predicted Maximum EMI (monthly)", f"₹ {r['predicted_max_emi']:,.2f}")
                 else:
-                    st.metric("📈 Predicted Maximum EMI", "N/A")
+                    st.metric("📈 Predicted Maximum EMI (monthly)", "N/A")
                 st.write("**Requested amount:**", f"₹ {r.get('requested_amount', 0):,.2f}")
                 st.write("**Requested tenure (months):**", int(r.get('requested_tenure', 0)))
+                st.write("**Predicted monthly instalment if requested amount granted:**",
+                         f"₹ {(r.get('requested_amount',0) / max(1,int(r.get('requested_tenure',1)))):,.2f}")
             with c2:
                 label = r["predicted_eligibility_label"]
                 proba = r["prediction_confidence"]
+                approved_amt = r["approved_amount"]
+                approved_emi = r["approved_monthly_emi"]
+                reason = r["approval_reason"]
+
                 if label is not None:
-                    lab_str = str(label)
-                    # a few heuristics for message type
-                    if lab_str.lower() in ("eligible", "yes", "true", "1"):
+                    if str(label).lower() == "eligible":
                         st.success(f"✅ Eligibility: {label}")
-                    elif lab_str.lower() in ("no", "not eligible", "false", "0"):
+                    elif str(label).lower() in ("not eligible", "not eligible"):
                         st.error(f"🚫 Eligibility: {label}")
                     else:
                         st.info(f"ℹ️ Eligibility: {label}")
+
                 if proba is not None:
                     try:
                         st.metric("Confidence", f"{proba:.2%}")
                     except Exception:
                         st.write("Confidence:", proba)
 
+                # Show approved amount details
+                if approved_amt and approved_amt > 0:
+                    st.markdown(f"### ✅ Approved amount: ₹ {approved_amt:,.2f}")
+                    st.markdown(f"**Approved monthly EMI:** ₹ {approved_emi:,.2f}")
+                    st.caption(reason)
+                else:
+                    st.markdown("### ❌ Not approved")
+                    st.caption(reason)
+
         # Download button for batch results
-        to_download_button(results_df, filename="predictions.csv", label="⬇️ Download Predictions CSV")
+        to_download_button(results_df, filename="predictions_with_approvals.csv", label="⬇️ Download Predictions + Approvals CSV")
 
         st.divider()
-        st.caption(f"Predictions done using **{selected_model}** models. Ensure your .pkl models include any preprocessing used during training (preferred) or that input columns match the training pipeline.")
+        st.caption(
+            f"Predictions done using **{selected_model}** models. "
+            "Approved amount is computed as min(requested_amount, predicted_max_emi * requested_tenure). "
+            "Make sure your .pkl models include preprocessing used during training (preferred) or that input columns match the training pipeline."
+        )
 
 # -----------------------
 # Footer
