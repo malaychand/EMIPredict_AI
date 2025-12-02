@@ -1,86 +1,101 @@
-# 🧠 EMIPredict AI – Intelligent Financial Risk Assessment Platform  
-**Domain**: FinTech & Banking  
-**Tech Stack**: Python · Streamlit · Scikit-learn · TensorFlow/PyTorch · MLflow · Pandas · NumPy  
+# 🧠 EMIPredict AI – Intelligent Financial Risk Assessment Platform
+
+**FinTech | Machine Learning | Streamlit | MLflow | DagsHub**
+
+🔗 **Live App**: [https://malaychand-emipredict-ai-app-bsvlet.streamlit.app/](https://malaychand-emipredict-ai-app-bsvlet.streamlit.app/)  
+🔗 **DagsHub Repository**: [https://dagshub.com/malaychand/EMIPredict_AI](https://dagshub.com/malaychand/EMIPredict_AI)  
+🔗 **MLflow Tracking UI**: [https://dagshub.com/malaychand/EMIPredict_AI.mlflow](https://dagshub.com/malaychand/EMIPredict_AI.mlflow)
 
 ---
 
-## 🚀 Project Overview  
-EMIPredict AI is an end-to-end financial risk assessment platform that leverages machine learning and **MLflow experiment tracking** to predict:  
-- **EMI Eligibility** (Classification)  
-- **Maximum EMI Amount** (Regression)  
+## ⭐ Project Overview
 
-The system delivers real-time financial risk analysis via an interactive **Streamlit web app**, empowering banks, fintechs, and credit agencies to make data-driven loan decisions.
+**EMIPredict AI** is an end-to-end **Financial Risk Assessment & EMI Prediction** platform powered by Machine Learning and deployed through an interactive **Streamlit** web application.
 
----
+The system predicts:
+- ✅ **EMI Eligibility** (Classification: `Eligible` / `High_Risk` / `Not_Eligible`)
+- ✅ **Maximum EMI Amount** (Regression: continuous prediction)
 
-## 🎯 Key Features  
-✅ Dual ML tasks – Classification & Regression  
-✅ Full **MLflow integration** for experiment tracking & model versioning  
-✅ Real-time predictions with an interactive **Streamlit dashboard**  
-✅ CRUD operations for financial data management  
-✅ Deployed on **Streamlit Cloud**
+Designed for **banks**, **fintech platforms**, and **credit underwriting teams**, it automates decision-making and reduces manual risk analysis.
 
 ---
 
-## 🏗️ Project Architecture  
-`Data Layer` → `Processing & Feature Engineering` →  
-`ML Model Training (Classification + Regression)` →  
-`MLflow Tracking` → `Streamlit Application` → `Cloud Deployment`
+## 🚀 Key Features
+
+- 🧠 **Dual ML Tasks**: Classification + Regression
+- 🔍 **MLflow Experiment Tracking**: Auto-logging of models, metrics, artifacts & parameters + Model Registry
+- 📊 **Streamlit Dashboard**: Real-time prediction with clean UI and fast inference
+- 🚀 **Cloud Deployment**: Hosted on Streamlit Cloud
+- 🗂️ **CRUD Operations**: For managing financial datasets
 
 ---
 
-## 📊 Dataset Summary  
-- **Records**: 400,000 financial profiles  
-- **Features**: 22 demographic & financial variables  
-- **Targets**:  
-  - `emi_eligibility` → `Eligible` / `High_Risk` / `Not_Eligible`  
-  - `max_monthly_emi` → Continuous EMI capacity value
+## 🧩 MLflow Integration
+
+Every trained model is logged using **MLflow**:
+- Hyperparameters
+- Evaluation Metrics
+- Confusion matrices, residual plots, feature importance
+- Serialized model files (`.pkl`)
+- Model Registry (Version control)
+
+🔗 **MLflow Tracking UI**:  
+👉 [https://dagshub.com/malaychand/EMIPredict_AI.mlflow](https://dagshub.com/malaychand/EMIPredict_AI.mlflow)
 
 ---
 
-## ⚙️ Model Details  
-**Classification Models**:  
-- Logistic Regression  
-- Random Forest Classifier  
-- XGBoost Classifier  
+## 🌐 Streamlit Cloud Deployment
 
-**Regression Models**:  
-- Linear Regression  
-- Random Forest Regressor  
-- XGBoost Regressor  
+The app includes:
+- 🟢 Real-time **EMI Eligibility Predictor**
+- 🟢 **Maximum EMI Calculator**
+- 🟢 Interactive **Insights & Charts**
 
-**Evaluation Metrics**:  
-- **Classification**: Accuracy, Precision, Recall, F1-score, ROC-AUC  
-- **Regression**: RMSE, MAE, R²
+🔗 **Live App**:  
+👉 [https://malaychand-emipredict-ai-app-bsvlet.streamlit.app/](https://malaychand-emipredict-ai-app-bsvlet.streamlit.app/)
 
 ---
 
-## 🧩 MLflow Integration  
-All models are logged and tracked with **MLflow**, including:  
-- Hyperparameters  
-- Metrics  
-- Artifacts (plots, models)  
-- Model Registry support
+## 📈 Business Impact
+
+- 📉 **80% reduction** in manual underwriting  
+- ⚡ **Real-time risk-based decision-making**  
+- 🔍 **Improved loan approval accuracy**  
+- 📊 **Better customer risk profiling**
 
 ---
 
-## 🌐 Streamlit Cloud Deployment  
-Deployed as a multi-page Streamlit app featuring:  
-- Real-time EMI eligibility prediction  
-- Maximum EMI recommendation  
-- Interactive financial insights  
+## 📚 Skills Gained / Showcased
 
-🔗 **Live Demo**: [Streamlit App Link]  
-
----
-
-## 📈 Business Impact  
-- Reduced manual underwriting by **80%**  
-- Automated **risk-based loan approval**  
-- Enabled **data-driven financial decision support**
+- End-to-end ML Pipeline
+- Data Preprocessing & Feature Engineering
+- Classification & Regression Model Development
+- MLflow Tracking & Experiment Management
+- Streamlit App Development
+- FinTech Analytics & Risk Scoring
+- Model Deployment on Cloud
 
 ---
 
-## 📚 Skills Gained  
-Python, Machine Learning, Streamlit, MLflow, Data Preprocessing,  
-Feature Engineering, Model Deployment, FinTech Analytics
+## 📦 Project Repository (DagsHub)
+
+👉 [https://dagshub.com/malaychand/EMIPredict_AI](https://dagshub.com/malaychand/EMIPredict_AI)
+
+---
+
+## 🎯 How to Run Locally
+
+```
+# 1. Clone repository
+git clone https://github.com/yourusername/EMIPredict_AI.git
+cd EMIPredict_AI
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Run Streamlit app
+streamlit run app.py
+
+```
+
+
